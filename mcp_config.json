@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "latex-server": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "C:\\Users\\rober\\Documents\\Codes\\mcp-latex-server",
+        "run",
+        "latex_server.py"
+      ],
+      "env": {
+        "LATEX_BASE_PATH": "C:\\Users\\rober\\Documents\\Codes\\mcp-latex-server",
+        "LATEX_LOG_LEVEL": "INFO"
+      },
+      "cwd": "C:\\Users\\rober\\Documents\\Codes\\mcp-latex-server"
+    }
+  }
+}
