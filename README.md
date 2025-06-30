@@ -65,7 +65,7 @@ sudo dnf install texlive-scheme-full
 
 1. **Clone or download** the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/RobertoDure/mcp-latex-server
 cd mcp-latex-server
 ```
 
