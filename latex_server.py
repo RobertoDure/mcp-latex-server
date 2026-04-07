@@ -1,605 +1,489 @@
 #!/usr/bin/env python3
 """
-MCP LaTeX Server - A Model Context Protocol server for LaTeX file creation and editing.
+MCP LaTeX Server v2 - A Model Context Protocol server for LaTeX file creation,
+editing, validation, and compilation.
+
+Uses FastMCP for automatic schema generation from type hints.
 """
 
-import argparse
 import asyncio
 import logging
 import os
 import re
+import subprocess
+import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Literal
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import (
-    Resource,
-    Tool,
-    TextContent,
-    ImageContent,
-    EmbeddedResource,
-    LoggingLevel
-)
+from mcp.server.fastmcp import FastMCP, Context
 from pydantic import BaseModel, Field
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class LaTeXServer:
-    """MCP Server for LaTeX file operations."""
-    
-    def __init__(self, base_path: str = "."):
-        self.base_path = Path(base_path).resolve()
-        self.server = Server("latex-server")
-        self._setup_tools()
-        self._setup_resources()
-    
-    def _setup_tools(self):
-        """Setup MCP tools for LaTeX operations."""
-        
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            return [
-                Tool(
-                    name="create_latex_file",
-                    description="Create a new LaTeX document with specified content and structure",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path where the LaTeX file should be created"
-                            },
-                            "document_type": {
-                                "type": "string",
-                                "enum": ["article", "report", "book", "letter", "beamer", "minimal"],
-                                "description": "Type of LaTeX document",
-                                "default": "article"
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "Document title",
-                                "default": ""
-                            },
-                            "author": {
-                                "type": "string",
-                                "description": "Document author",
-                                "default": ""
-                            },
-                            "date": {
-                                "type": "string",
-                                "description": "Document date (use \\today for current date)",
-                                "default": "\\today"
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "Main content of the document",
-                                "default": ""
-                            },
-                            "packages": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "List of LaTeX packages to include",
-                                "default": []
-                            },
-                            "geometry": {
-                                "type": "string",
-                                "description": "Page geometry settings (e.g., 'margin=1in')",
-                                "default": ""
-                            }
-                        },
-                        "required": ["file_path"]
-                    }
-                ),
-                Tool(
-                    name="edit_latex_file",
-                    description="Edit an existing LaTeX file by replacing content or inserting new content",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the LaTeX file to edit"
-                            },
-                            "operation": {
-                                "type": "string",
-                                "enum": ["replace", "insert_before", "insert_after", "append", "prepend"],
-                                "description": "Type of edit operation"
-                            },
-                            "search_text": {
-                                "type": "string",
-                                "description": "Text to search for (required for replace, insert_before, insert_after)"
-                            },
-                            "new_text": {
-                                "type": "string",
-                                "description": "New text to insert or replace with"
-                            },
-                            "line_number": {
-                                "type": "integer",
-                                "description": "Line number for insertion (alternative to search_text)"
-                            }
-                        },
-                        "required": ["file_path", "operation", "new_text"]
-                    }
-                ),
-                Tool(
-                    name="read_latex_file",
-                    description="Read and return the contents of a LaTeX file",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the LaTeX file to read"
-                            }
-                        },
-                        "required": ["file_path"]
-                    }
-                ),
-                Tool(
-                    name="list_latex_files",
-                    description="List all LaTeX files in a directory",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "directory_path": {
-                                "type": "string",
-                                "description": "Directory path to search for LaTeX files",
-                                "default": "."
-                            },
-                            "recursive": {
-                                "type": "boolean",
-                                "description": "Whether to search recursively in subdirectories",
-                                "default": False
-                            }
-                        }
-                    }
-                ),
-                Tool(
-                    name="validate_latex",
-                    description="Perform basic LaTeX syntax validation on a file",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the LaTeX file to validate"
-                            }
-                        },
-                        "required": ["file_path"]
-                    }
-                ),
-                Tool(
-                    name="get_latex_structure",
-                    description="Extract the structure of a LaTeX document (sections, subsections, etc.)",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the LaTeX file to analyze"
-                            }
-                        },
-                        "required": ["file_path"]
-                    }
-                )
-            ]
-        
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
-            try:
-                if name == "create_latex_file":
-                    return await self._create_latex_file(**arguments)
-                elif name == "edit_latex_file":
-                    return await self._edit_latex_file(**arguments)
-                elif name == "read_latex_file":
-                    return await self._read_latex_file(**arguments)
-                elif name == "list_latex_files":
-                    return await self._list_latex_files(**arguments)
-                elif name == "validate_latex":
-                    return await self._validate_latex(**arguments)
-                elif name == "get_latex_structure":
-                    return await self._get_latex_structure(**arguments)
-                else:
-                    return [TextContent(type="text", text=f"Unknown tool: {name}")]
-            except Exception as e:
-                logger.error(f"Error in tool {name}: {str(e)}")
-                return [TextContent(type="text", text=f"Error: {str(e)}")]
-    
-    def _setup_resources(self):
-        """Setup MCP resources."""
-        
-        @self.server.list_resources()
-        async def list_resources() -> List[Resource]:
-            """List available LaTeX files as resources."""
-            resources = []
-            try:
-                for tex_file in self.base_path.rglob("*.tex"):
-                    if tex_file.is_file():
-                        relative_path = tex_file.relative_to(self.base_path)                        
-                        resources.append(
-                            Resource(
-                                uri=f"file://{tex_file}",
-                                name=str(relative_path),
-                                description=f"LaTeX file: {relative_path}",
-                                mimeType="text/x-tex"
-                            )
-                        )
-            except Exception as e:
-                logger.error(f"Error listing resources: {e}")
-            
-            return resources
-        
-        @self.server.read_resource()
-        async def read_resource(uri: str) -> str:
-            """Read a LaTeX file resource."""
-            try:
-                if uri.startswith("file://"):
-                    file_path = Path(uri[7:])
-                    if file_path.suffix == ".tex" and file_path.exists():
-                        return file_path.read_text(encoding="utf-8")
-                    else:
-                        raise ValueError(f"File not found or not a LaTeX file: {file_path}")
-                else:
-                    raise ValueError(f"Unsupported URI scheme: {uri}")
-            except Exception as e:
-                logger.error(f"Error reading resource {uri}: {e}")
-                raise
-    
-    def _get_file_path(self, file_path: str) -> Path:
-        """Get absolute file path, ensuring it's within the base path."""
-        path = Path(file_path)
-        if not path.is_absolute():
-            path = self.base_path / path
-        
-        # Ensure the path is within a reasonable scope for security
-        # Allow access to the parent directory of base_path (Codes directory)
-        allowed_base = self.base_path.parent.resolve()
-        try:
-            path.resolve().relative_to(allowed_base)
-        except ValueError:
-            raise ValueError(f"Path {file_path} is outside the allowed base path ({allowed_base})")
-        
-        return path
-    
-    def _create_latex_template(self, document_type: str, title: str, author: str, date: str,
-                             content: str, packages: List[str], geometry: str) -> str:
-        """Create a LaTeX document template."""
-        template_parts = []
-        
-        # Document class
-        template_parts.append(f"\\documentclass{{{document_type}}}")
-        
-        # Packages
-        default_packages = ["inputenc", "fontenc", "babel"]
-        if geometry:
-            template_parts.append(f"\\usepackage[{geometry}]{{geometry}}")
-        
-        for package in default_packages + packages:
-            if package == "inputenc":
-                template_parts.append("\\usepackage[utf8]{inputenc}")
-            elif package == "fontenc":
-                template_parts.append("\\usepackage[T1]{fontenc}")
-            elif package == "babel":
-                template_parts.append("\\usepackage[english]{babel}")
-            else:
-                template_parts.append(f"\\usepackage{{{package}}}")
-        
-        # Title, author, date
-        if title:
-            template_parts.append(f"\\title{{{title}}}")
-        if author:
-            template_parts.append(f"\\author{{{author}}}")
-        if date:
-            template_parts.append(f"\\date{{{date}}}")
-        
-        # Begin document
-        template_parts.append("\\begin{document}")
-        
-        # Make title if title is provided
-        if title:
-            template_parts.append("\\maketitle")
-        
-        # Content
-        if content:
-            template_parts.append(content)
-        else:
-            template_parts.append("% Your content here")
-        
-        # End document
-        template_parts.append("\\end{document}")
-        
-        return "\n\n".join(template_parts)
-    
-    async def _create_latex_file(self, file_path: str, document_type: str = "article",
-                               title: str = "", author: str = "", date: str = "\\today",
-                               content: str = "", packages: List[str] = None,
-                               geometry: str = "") -> List[TextContent]:
-        """Create a new LaTeX file."""
-        if packages is None:
-            packages = []
-        
-        try:
-            path = self._get_file_path(file_path)
-            
-            # Create directory if it doesn't exist
-            path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Generate LaTeX content
-            latex_content = self._create_latex_template(
-                document_type, title, author, date, content, packages, geometry
-            )
-            
-            # Write file
-            path.write_text(latex_content, encoding="utf-8")
-            
-            return [TextContent(
-                type="text",
-                text=f"Successfully created LaTeX file: {path}\n\nContent:\n{latex_content}"
-            )]
-        
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error creating LaTeX file: {str(e)}")]
-    
-    async def _edit_latex_file(self, file_path: str, operation: str, new_text: str,
-                             search_text: str = None, line_number: int = None) -> List[TextContent]:
-        """Edit an existing LaTeX file."""
-        try:
-            path = self._get_file_path(file_path)
-            
-            if not path.exists():
-                return [TextContent(type="text", text=f"File not found: {path}")]
-            
-            # Read current content
-            content = path.read_text(encoding="utf-8")
-            lines = content.splitlines()
-            
-            if operation == "replace":
-                if not search_text:
-                    return [TextContent(type="text", text="search_text is required for replace operation")]
-                content = content.replace(search_text, new_text)
-            
-            elif operation == "insert_before":
-                if search_text:
-                    content = content.replace(search_text, f"{new_text}\n{search_text}")
-                elif line_number is not None and 1 <= line_number <= len(lines):
-                    lines.insert(line_number - 1, new_text)
-                    content = "\n".join(lines)
-                else:
-                    return [TextContent(type="text", text="search_text or valid line_number is required")]
-            
-            elif operation == "insert_after":
-                if search_text:
-                    content = content.replace(search_text, f"{search_text}\n{new_text}")
-                elif line_number is not None and 1 <= line_number <= len(lines):
-                    lines.insert(line_number, new_text)
-                    content = "\n".join(lines)
-                else:
-                    return [TextContent(type="text", text="search_text or valid line_number is required")]
-            
-            elif operation == "append":
-                content = content + "\n" + new_text
-            
-            elif operation == "prepend":
-                content = new_text + "\n" + content
-            
-            else:
-                return [TextContent(type="text", text=f"Unknown operation: {operation}")]
-            
-            # Write updated content
-            path.write_text(content, encoding="utf-8")
-            
-            return [TextContent(
-                type="text",
-                text=f"Successfully edited LaTeX file: {path}\n\nOperation: {operation}\nFile updated."
-            )]
-        
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error editing LaTeX file: {str(e)}")]
-    
-    async def _read_latex_file(self, file_path: str) -> List[TextContent]:
-        """Read and return the contents of a LaTeX file."""
-        try:
-            path = self._get_file_path(file_path)
-            
-            if not path.exists():
-                return [TextContent(type="text", text=f"File not found: {path}")]
-            
-            content = path.read_text(encoding="utf-8")
-            
-            return [TextContent(
-                type="text",
-                text=f"Contents of {path}:\n\n{content}"
-            )]
-        
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error reading LaTeX file: {str(e)}")]
-    
-    async def _list_latex_files(self, directory_path: str = ".", recursive: bool = False) -> List[TextContent]:
-        """List all LaTeX files in a directory."""
-        try:
-            dir_path = self._get_file_path(directory_path)
-            
-            if not dir_path.exists() or not dir_path.is_dir():
-                return [TextContent(type="text", text=f"Directory not found: {dir_path}")]
-            
-            pattern = "**/*.tex" if recursive else "*.tex"
-            tex_files = list(dir_path.glob(pattern))
-            
-            if not tex_files:
-                return [TextContent(type="text", text=f"No LaTeX files found in {dir_path}")]
-            
-            file_list = []
-            for tex_file in sorted(tex_files):
-                relative_path = tex_file.relative_to(self.base_path)
-                file_stats = tex_file.stat()
-                size = file_stats.st_size
-                modified = file_stats.st_mtime
-                
-                file_list.append(f"  {relative_path} ({size} bytes)")
-            
-            return [TextContent(
-                type="text",
-                text=f"LaTeX files in {dir_path}:\n\n" + "\n".join(file_list)
-            )]
-        
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error listing LaTeX files: {str(e)}")]
-    
-    async def _validate_latex(self, file_path: str) -> List[TextContent]:
-        """Perform basic LaTeX syntax validation."""
-        try:
-            path = self._get_file_path(file_path)
-            
-            if not path.exists():
-                return [TextContent(type="text", text=f"File not found: {path}")]
-            
-            content = path.read_text(encoding="utf-8")
-            issues = []
-            
-            # Check for basic LaTeX structure
-            if "\\documentclass" not in content:
-                issues.append("Missing \\documentclass declaration")
-            
-            if "\\begin{document}" not in content:
-                issues.append("Missing \\begin{document}")
-            
-            if "\\end{document}" not in content:
-                issues.append("Missing \\end{document}")
-            
-            # Check for balanced braces
-            open_braces = content.count("{")
-            close_braces = content.count("}")
-            if open_braces != close_braces:
-                issues.append(f"Unbalanced braces: {open_braces} opening, {close_braces} closing")
-            
-            # Check for common LaTeX environments
-            begin_pattern = re.compile(r'\\begin\{([^}]+)\}')
-            end_pattern = re.compile(r'\\end\{([^}]+)\}')
-            
-            begins = begin_pattern.findall(content)
-            ends = end_pattern.findall(content)
-            
-            for env in begins:
-                if begins.count(env) != ends.count(env):
-                    issues.append(f"Unmatched environment: {env}")
-            
-            # Check for undefined references
-            ref_pattern = re.compile(r'\\ref\{([^}]+)\}')
-            label_pattern = re.compile(r'\\label\{([^}]+)\}')
-            
-            refs = set(ref_pattern.findall(content))
-            labels = set(label_pattern.findall(content))
-            
-            undefined_refs = refs - labels
-            if undefined_refs:
-                issues.append(f"Undefined references: {', '.join(undefined_refs)}")
-            
-            if issues:
-                return [TextContent(
-                    type="text",
-                    text=f"LaTeX validation issues found in {path}:\n\n" + "\n".join(f"- {issue}" for issue in issues)
-                )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text=f"LaTeX file {path} appears to be valid (basic checks passed)"
-                )]
-        
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error validating LaTeX file: {str(e)}")]
-    
-    async def _get_latex_structure(self, file_path: str) -> List[TextContent]:
-        """Extract the structure of a LaTeX document."""
-        try:
-            path = self._get_file_path(file_path)
-            
-            if not path.exists():
-                return [TextContent(type="text", text=f"File not found: {path}")]
-            
-            content = path.read_text(encoding="utf-8")
-            structure = []
-            
-            # Extract document class
-            doc_class_match = re.search(r'\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}', content)
-            if doc_class_match:
-                structure.append(f"Document class: {doc_class_match.group(1)}")
-            
-            # Extract title, author, date
-            title_match = re.search(r'\\title\{([^}]+)\}', content)
-            if title_match:
-                structure.append(f"Title: {title_match.group(1)}")
-            
-            author_match = re.search(r'\\author\{([^}]+)\}', content)
-            if author_match:
-                structure.append(f"Author: {author_match.group(1)}")
-            
-            # Extract sections
-            section_patterns = [
-                (r'\\part\{([^}]+)\}', "Part"),
-                (r'\\chapter\{([^}]+)\}', "Chapter"),
-                (r'\\section\{([^}]+)\}', "Section"),
-                (r'\\subsection\{([^}]+)\}', "Subsection"),
-                (r'\\subsubsection\{([^}]+)\}', "Subsubsection"),
-                (r'\\paragraph\{([^}]+)\}', "Paragraph"),
-                (r'\\subparagraph\{([^}]+)\}', "Subparagraph"),
-            ]
-            
-            structure.append("\nDocument structure:")
-            for pattern, level in section_patterns:
-                matches = re.finditer(pattern, content)
-                for match in matches:
-                    structure.append(f"  {level}: {match.group(1)}")
-            
-            # Extract packages
-            package_pattern = re.compile(r'\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}')
-            packages = package_pattern.findall(content)
-            if packages:
-                structure.append(f"\nPackages used: {', '.join(set(packages))}")
-            
-            return [TextContent(
-                type="text",
-                text=f"Structure of {path}:\n\n" + "\n".join(structure)
-            )]
-        
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error analyzing LaTeX structure: {str(e)}")]
-    
-    async def run(self):
-        """Run the MCP server."""
-        async with stdio_server() as (read_stream, write_stream):
-            await self.server.run(
-                read_stream,
-                write_stream,
-                self.server.create_initialization_options()
-            )
+# --- Configuration ---
+
+BASE_PATH = Path(os.environ.get("LATEX_SERVER_BASE_PATH", ".")).resolve()
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# --- Structured Output Models ---
 
 
-def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(description="MCP LaTeX Server")
-    parser.add_argument(
-        "--base-path",
-        type=str,
-        default=".",
-        help="Base path for LaTeX files (default: current directory)"
-    )
-    
-    args = parser.parse_args()
-    
-    # Create and run the server
-    server = LaTeXServer(base_path=args.base_path)
-    
+class FileResult(BaseModel):
+    """Result of a file operation."""
+    path: str = Field(description="Absolute path to the file")
+    success: bool
+    message: str
+    content: str | None = Field(default=None, description="File content if applicable")
+
+
+class ValidationResult(BaseModel):
+    """Result of LaTeX validation."""
+    path: str
+    valid: bool
+    issues: list[str] = Field(default_factory=list)
+
+
+class StructureInfo(BaseModel):
+    """Extracted structure of a LaTeX document."""
+    path: str
+    document_class: str | None = None
+    title: str | None = None
+    author: str | None = None
+    packages: list[str] = Field(default_factory=list)
+    sections: list[str] = Field(default_factory=list)
+
+
+class CompileResult(BaseModel):
+    """Result of LaTeX compilation."""
+    path: str
+    success: bool
+    pdf_path: str | None = None
+    log_output: str = ""
+    errors: list[str] = Field(default_factory=list)
+
+
+class FileInfo(BaseModel):
+    """Information about a LaTeX file."""
+    path: str
+    size_bytes: int
+
+
+class FileListResult(BaseModel):
+    """Result of listing LaTeX files."""
+    directory: str
+    files: list[FileInfo] = Field(default_factory=list)
+
+
+# --- Path Security ---
+
+
+def get_safe_path(file_path: str) -> Path:
+    """Resolve a file path, ensuring it stays within BASE_PATH."""
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = BASE_PATH / path
+    resolved = path.resolve()
     try:
-        asyncio.run(server.run())
-    except KeyboardInterrupt:
-        logger.info("Server stopped by user")
-    except Exception as e:
-        logger.error(f"Server error: {e}")
-        raise
+        resolved.relative_to(BASE_PATH)
+    except ValueError:
+        raise ValueError(
+            f"Access denied: '{file_path}' resolves outside the allowed directory ({BASE_PATH})"
+        )
+    return resolved
 
+
+# --- Template Generation ---
+
+
+def create_latex_template(
+    document_type: str,
+    title: str,
+    author: str,
+    date: str,
+    content: str,
+    packages: list[str],
+    geometry: str,
+) -> str:
+    """Create a LaTeX document from parameters."""
+    parts: list[str] = []
+    parts.append(f"\\documentclass{{{document_type}}}")
+
+    # Core packages
+    if geometry:
+        parts.append(f"\\usepackage[{geometry}]{{geometry}}")
+    parts.append("\\usepackage[utf8]{inputenc}")
+    parts.append("\\usepackage[T1]{fontenc}")
+    parts.append("\\usepackage[english]{babel}")
+
+    for pkg in packages:
+        parts.append(f"\\usepackage{{{pkg}}}")
+
+    if title:
+        parts.append(f"\\title{{{title}}}")
+    if author:
+        parts.append(f"\\author{{{author}}}")
+    if date:
+        parts.append(f"\\date{{{date}}}")
+
+    parts.append("")
+    parts.append("\\begin{document}")
+    if title:
+        parts.append("\\maketitle")
+    parts.append("")
+    parts.append(content if content else "% Your content here")
+    parts.append("")
+    parts.append("\\end{document}")
+
+    return "\n".join(parts)
+
+
+# --- Server Setup ---
+
+mcp = FastMCP(
+    "latex-server",
+    instructions=(
+        "LaTeX document server. Use tools to create, edit, read, validate, "
+        "compile, and list LaTeX files. All file paths are relative to the "
+        "configured base directory."
+    ),
+)
+
+
+# --- Tools ---
+
+
+@mcp.tool()
+async def create_latex_file(
+    file_path: str = Field(description="Path for the new .tex file (relative to base dir)"),
+    document_type: Literal["article", "report", "book", "letter", "beamer", "minimal"] = "article",
+    title: str = "",
+    author: str = "",
+    date: str = "\\today",
+    content: str = "",
+    packages: list[str] = Field(default_factory=list, description="Extra LaTeX packages to include"),
+    geometry: str = Field(default="", description="Geometry settings, e.g. 'margin=1in'"),
+) -> FileResult:
+    """Create a new LaTeX document with specified content and structure."""
+    path = get_safe_path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    latex_content = create_latex_template(
+        document_type, title, author, date, content, packages, geometry
+    )
+    path.write_text(latex_content, encoding="utf-8")
+
+    return FileResult(path=str(path), success=True, message="File created", content=latex_content)
+
+
+@mcp.tool()
+async def create_from_template(
+    file_path: str = Field(description="Path for the new .tex file"),
+    template: Literal["article", "beamer", "report"] = "article",
+) -> FileResult:
+    """Create a LaTeX document from a bundled template file."""
+    path = get_safe_path(file_path)
+    template_file = TEMPLATES_DIR / f"{template}_template.tex"
+
+    if not template_file.exists():
+        raise ValueError(f"Template '{template}' not found at {template_file}")
+
+    template_content = template_file.read_text(encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(template_content, encoding="utf-8")
+
+    return FileResult(path=str(path), success=True, message=f"Created from '{template}' template", content=template_content)
+
+
+@mcp.tool()
+async def edit_latex_file(
+    file_path: str = Field(description="Path to the .tex file to edit"),
+    operation: Literal["replace", "insert_before", "insert_after", "append", "prepend"] = Field(
+        description="Type of edit operation"
+    ),
+    new_text: str = Field(description="Text to insert or replace with"),
+    search_text: str | None = Field(
+        default=None, description="Text to search for (required for replace/insert_before/insert_after)"
+    ),
+    line_number: int | None = Field(
+        default=None, description="1-based line number (alternative to search_text for insert operations)"
+    ),
+) -> FileResult:
+    """Edit an existing LaTeX file by replacing, inserting, or appending content."""
+    path = get_safe_path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    content = path.read_text(encoding="utf-8")
+
+    if operation == "replace":
+        if not search_text:
+            raise ValueError("search_text is required for replace operation")
+        if search_text not in content:
+            raise ValueError(f"search_text not found in file")
+        content = content.replace(search_text, new_text)
+
+    elif operation in ("insert_before", "insert_after"):
+        if search_text:
+            if search_text not in content:
+                raise ValueError("search_text not found in file")
+            if operation == "insert_before":
+                content = content.replace(search_text, f"{new_text}\n{search_text}")
+            else:
+                content = content.replace(search_text, f"{search_text}\n{new_text}")
+        elif line_number is not None:
+            lines = content.splitlines()
+            if not (1 <= line_number <= len(lines)):
+                raise ValueError(f"line_number {line_number} out of range (1-{len(lines)})")
+            idx = line_number - 1 if operation == "insert_before" else line_number
+            lines.insert(idx, new_text)
+            content = "\n".join(lines)
+        else:
+            raise ValueError("search_text or line_number is required for insert operations")
+
+    elif operation == "append":
+        content = content.rstrip("\n") + "\n" + new_text + "\n"
+
+    elif operation == "prepend":
+        content = new_text + "\n" + content
+
+    path.write_text(content, encoding="utf-8")
+    return FileResult(path=str(path), success=True, message=f"Operation '{operation}' applied")
+
+
+@mcp.tool()
+async def read_latex_file(
+    file_path: str = Field(description="Path to the .tex file to read"),
+) -> FileResult:
+    """Read and return the contents of a LaTeX file."""
+    path = get_safe_path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    content = path.read_text(encoding="utf-8")
+    return FileResult(path=str(path), success=True, message="File read", content=content)
+
+
+@mcp.tool()
+async def list_latex_files(
+    directory_path: str = Field(default=".", description="Directory to search"),
+    recursive: bool = Field(default=False, description="Search subdirectories"),
+) -> FileListResult:
+    """List all .tex files in a directory."""
+    dir_path = get_safe_path(directory_path)
+    if not dir_path.is_dir():
+        raise NotADirectoryError(f"Not a directory: {dir_path}")
+
+    pattern = "**/*.tex" if recursive else "*.tex"
+    files = [
+        FileInfo(
+            path=str(f.relative_to(BASE_PATH)),
+            size_bytes=f.stat().st_size,
+        )
+        for f in sorted(dir_path.glob(pattern))
+        if f.is_file()
+    ]
+    return FileListResult(directory=str(dir_path), files=files)
+
+
+@mcp.tool()
+async def validate_latex(
+    file_path: str = Field(description="Path to the .tex file to validate"),
+) -> ValidationResult:
+    """Perform LaTeX syntax validation (structure, braces, environments, references)."""
+    path = get_safe_path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    content = path.read_text(encoding="utf-8")
+    issues: list[str] = []
+
+    # Strip comments before analysis
+    stripped = re.sub(r"(?<!\\)%.*", "", content)
+
+    if "\\documentclass" not in stripped:
+        issues.append("Missing \\documentclass declaration")
+    if "\\begin{document}" not in stripped:
+        issues.append("Missing \\begin{document}")
+    if "\\end{document}" not in stripped:
+        issues.append("Missing \\end{document}")
+
+    # Balanced braces (ignore escaped braces)
+    clean = re.sub(r"\\[{}]", "", stripped)  # remove \{ and \}
+    # Also remove verbatim-like content
+    clean = re.sub(r"\\begin\{verbatim\}.*?\\end\{verbatim\}", "", clean, flags=re.DOTALL)
+    opens = clean.count("{")
+    closes = clean.count("}")
+    if opens != closes:
+        issues.append(f"Unbalanced braces: {opens} opening vs {closes} closing")
+
+    # Environment matching (order-aware with a stack)
+    begin_iter = list(re.finditer(r"\\begin\{([^}]+)\}", stripped))
+    end_iter = list(re.finditer(r"\\end\{([^}]+)\}", stripped))
+
+    events: list[tuple[int, str, str]] = []
+    for m in begin_iter:
+        events.append((m.start(), "begin", m.group(1)))
+    for m in end_iter:
+        events.append((m.start(), "end", m.group(1)))
+    events.sort()
+
+    stack: list[str] = []
+    for _, kind, name in events:
+        if kind == "begin":
+            stack.append(name)
+        else:
+            if not stack:
+                issues.append(f"\\end{{{name}}} without matching \\begin")
+            elif stack[-1] != name:
+                issues.append(f"Expected \\end{{{stack[-1]}}}, found \\end{{{name}}}")
+                stack.pop()
+            else:
+                stack.pop()
+    for leftover in stack:
+        issues.append(f"Unclosed environment: {leftover}")
+
+    # Undefined references
+    refs = set(re.findall(r"\\ref\{([^}]+)\}", stripped))
+    labels = set(re.findall(r"\\label\{([^}]+)\}", stripped))
+    for r in sorted(refs - labels):
+        issues.append(f"Undefined reference: {r}")
+
+    return ValidationResult(path=str(path), valid=len(issues) == 0, issues=issues)
+
+
+@mcp.tool()
+async def get_latex_structure(
+    file_path: str = Field(description="Path to the .tex file to analyze"),
+) -> StructureInfo:
+    """Extract document structure: class, title, author, packages, and section hierarchy."""
+    path = get_safe_path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    content = path.read_text(encoding="utf-8")
+
+    doc_class = None
+    m = re.search(r"\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}", content)
+    if m:
+        doc_class = m.group(1)
+
+    title = None
+    m = re.search(r"\\title\{([^}]+)\}", content)
+    if m:
+        title = m.group(1)
+
+    author = None
+    m = re.search(r"\\author\{([^}]+)\}", content)
+    if m:
+        author = m.group(1)
+
+    packages = list(dict.fromkeys(re.findall(r"\\usepackage(?:\[[^\]]*\])?\{([^}]+)\}", content)))
+
+    section_patterns = [
+        (r"\\part\{([^}]+)\}", "Part"),
+        (r"\\chapter\{([^}]+)\}", "Chapter"),
+        (r"\\section\{([^}]+)\}", "Section"),
+        (r"\\subsection\{([^}]+)\}", "Subsection"),
+        (r"\\subsubsection\{([^}]+)\}", "Subsubsection"),
+    ]
+    sections: list[str] = []
+    for pattern, level in section_patterns:
+        for m in re.finditer(pattern, content):
+            sections.append(f"{level}: {m.group(1)}")
+
+    return StructureInfo(
+        path=str(path),
+        document_class=doc_class,
+        title=title,
+        author=author,
+        packages=packages,
+        sections=sections,
+    )
+
+
+@mcp.tool()
+async def compile_latex(
+    file_path: str = Field(description="Path to the .tex file to compile"),
+    engine: Literal["pdflatex", "xelatex", "lualatex"] = "pdflatex",
+    ctx: Context | None = None,
+) -> CompileResult:
+    """Compile a LaTeX file to PDF using the specified engine."""
+    path = get_safe_path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    engine_path = shutil.which(engine)
+    if not engine_path:
+        raise RuntimeError(
+            f"'{engine}' not found on PATH. Install a LaTeX distribution (TeX Live, MiKTeX)."
+        )
+
+    if ctx:
+        await ctx.info(f"Compiling {path.name} with {engine}...")
+        await ctx.report_progress(0, 2)
+
+    # Run twice for references/TOC
+    errors: list[str] = []
+    log_output = ""
+    for pass_num in range(1, 3):
+        proc = await asyncio.create_subprocess_exec(
+            engine_path,
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            str(path.name),
+            cwd=str(path.parent),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        log_output = stdout.decode("utf-8", errors="replace")
+
+        if ctx:
+            await ctx.report_progress(pass_num, 2)
+
+        if proc.returncode != 0:
+            # Extract error lines from log
+            for line in log_output.splitlines():
+                if line.startswith("!"):
+                    errors.append(line)
+            return CompileResult(
+                path=str(path),
+                success=False,
+                log_output=log_output[-2000:],  # last 2000 chars
+                errors=errors,
+            )
+
+    pdf_path = path.with_suffix(".pdf")
+    return CompileResult(
+        path=str(path),
+        success=True,
+        pdf_path=str(pdf_path) if pdf_path.exists() else None,
+        log_output=log_output[-1000:],
+    )
+
+
+# --- Resources ---
+
+
+@mcp.resource("latex://templates")
+async def list_templates() -> str:
+    """List available LaTeX templates."""
+    templates = [f.stem.replace("_template", "") for f in TEMPLATES_DIR.glob("*_template.tex")]
+    return "Available templates: " + ", ".join(sorted(templates))
+
+
+@mcp.resource("latex://template/{name}")
+async def get_template(name: str) -> str:
+    """Get the content of a specific template."""
+    template_file = TEMPLATES_DIR / f"{name}_template.tex"
+    if not template_file.exists():
+        raise ValueError(f"Template '{name}' not found")
+    return template_file.read_text(encoding="utf-8")
+
+
+# --- Entry Point ---
 
 if __name__ == "__main__":
-    main()
+    mcp.run()

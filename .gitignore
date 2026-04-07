@@ -1,1 +1,14 @@
 /.venv
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+_test_output/
