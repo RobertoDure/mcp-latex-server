@@ -13,7 +13,7 @@ A Model Context Protocol (MCP) server for LaTeX file creation, editing, validati
 
 ## Prerequisites
 
-- **Python 3.10+**
+- **Python 3.11.9+**
 - **LaTeX distribution** (for compilation):
   - Windows: [MiKTeX](https://miktex.org/download) or [TeX Live](https://www.tug.org/texlive/)
   - macOS: [MacTeX](https://www.tug.org/mactex/) (`brew install --cask mactex`)

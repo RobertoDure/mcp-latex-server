@@ -28,10 +28,10 @@ def get_claude_config_path() -> Path:
 
 
 def check_python():
-    """Verify Python >= 3.10."""
+    """Verify Python >= 3.11.9."""
     major, minor = sys.version_info[:2]
-    if (major, minor) < (3, 10):
-        print(f"  Python 3.10+ required (found {major}.{minor})")
+    if (major, minor) < (3, 11.9):
+        print(f"  Python 3.11.9+ required (found {major}.{minor})")
         return False
     print(f"  Python {major}.{minor}")
     return True
