@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        mcp-requirement: ["mcp>=1.9.4,<2", "mcp>=2,<3"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python-version }}"
+      - name: Install project and test tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" "${{ matrix.mcp-requirement }}"
+      - name: Lint with ruff
+        run: |
+          python -m ruff check src tests scripts examples latex_server.py
+      - name: Run tests with coverage
+        run: |
+          python -m pytest --cov=mcp_latex_server --cov-report=term-missing
+      - name: Build wheel
+        run: |
+          python -m pip wheel --no-deps --no-build-isolation -w dist .
