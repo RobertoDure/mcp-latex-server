@@ -6,7 +6,7 @@
         "--directory",
         "YOUR_PATH/mcp-latex-server",
         "run",
-        "latex_server.py"
+        "mcp-latex-server"
       ],
       "env": {
         "LATEX_SERVER_BASE_PATH": "YOUR_PATH/latex-files"
