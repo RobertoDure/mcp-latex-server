@@ -30,4 +30,4 @@ jobs:
           python -m pytest --cov=mcp_latex_server --cov-report=term-missing
       - name: Build wheel
         run: |
-          python -m pip wheel --no-deps --no-build-isolation -w dist .
+          python -m pip wheel --no-deps -w dist .
